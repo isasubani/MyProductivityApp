@@ -101,7 +101,7 @@ Jika Anda ingin melakukan uji coba alur pemrosesan data secara manual lewat kode
 Untuk memaketkan kode Python ini menjadi aplikasi executable mandiri menggunakan **PyInstaller**, gunakan perintah berikut:
 
 ```bash
-pyinstaller --windowed --name "MyProductivityTools" --icon="icon.ico" app.py
+pyinstaller --windowed --name "MyProductivityTools" --icon="icon.ico" --collect-data whisper --collect-data tiktoken app.py
 ```
 
 Hasil build akan berada di direktori `dist/MyProductivityTools.app` (untuk macOS) atau `dist/MyProductivityTools.exe` (untuk Windows).

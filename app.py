@@ -122,7 +122,7 @@ class LLMWorker(QThread):
 class MainWindow(QMainWindow):
     def __init__(self):
         super().__init__()
-        self.setWindowTitle("🎙️ Audio AI Agent")
+        self.setWindowTitle("👨🏻‍💻 My Productivity Tools")
         self.resize(1000, 750)
 
         self.config = {

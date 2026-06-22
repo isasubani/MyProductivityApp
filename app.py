@@ -4,30 +4,40 @@ import time
 import traceback
 import certifi
 import whisper
+import logging # <-- Tambahan untuk Logging
 from openai import OpenAI
 from PySide6.QtWidgets import (QApplication, QMainWindow, QWidget, QVBoxLayout,
                                QHBoxLayout, QTabWidget, QLabel, QPushButton,
                                QRadioButton, QButtonGroup, QTextEdit, QLineEdit,
                                QFileDialog, QMessageBox, QGroupBox, QFormLayout,
                                QProgressBar, QCheckBox)
-from PySide6.QtCore import QThread, Signal, Qt, QTimer
+from PySide6.QtCore import QThread, Signal, Qt, QTimer, QObject
 
 # =======================================================
 # 🔧 PATCH KHUSUS MAC .APP (PYINSTALLER WINDOWED MODE)
 # =======================================================
-# 1. Cegah error stat: NoneType karena aplikasi GUI ga punya Terminal
 if sys.stdout is None:
     sys.stdout = open(os.devnull, "w")
 if sys.stderr is None:
     sys.stderr = open(os.devnull, "w")
 
-# 2. Tambahin Homebrew PATH biar Whisper dapet FFmpeg-nya
 os.environ["PATH"] += os.pathsep + "/usr/local/bin" + os.pathsep + "/opt/homebrew/bin"
-
-# 3. Bantu httpx/OpenAI nemuin sertifikat SSL
 os.environ["SSL_CERT_FILE"] = certifi.where()
-# =======================================================
 
+# =======================================================
+# 📜 SISTEM LOGGING (THREAD-SAFE UNTUK GUI)
+# =======================================================
+class LogEmitter(QObject):
+    log_signal = Signal(str)
+
+class QPlainTextEditLogger(logging.Handler):
+    def __init__(self, emitter):
+        super().__init__()
+        self.emitter = emitter
+
+    def emit(self, record):
+        msg = self.format(record)
+        self.emitter.log_signal.emit(msg)
 
 # =======================================================
 # 🧠 1. CLASSES (TRANSCRIBER & AI AGENT)
@@ -36,6 +46,7 @@ class AudioTranscriber:
     def __init__(self, mode, config):
         self.mode = mode
         self.config = config
+        logging.info(f"Menginisialisasi Transcriber (Mode: {self.mode})")
         if self.mode == "Cloud":
             self.cloud_client = OpenAI(
                 api_key=self.config["cloud_stt_key"], 
@@ -45,10 +56,15 @@ class AudioTranscriber:
     def transcribe(self, audio_path):
         if self.mode == "Local":
             model_name = self.config["local_stt_model"]
+            logging.info(f"Me-load model Whisper Local: {model_name}")
             local_whisper_client = whisper.load_model(model_name)
+            
+            logging.info(f"Mulai transkripsi file: {os.path.basename(audio_path)}")
             result = local_whisper_client.transcribe(audio_path, language="id")
             return result["text"]
+            
         elif self.mode == "Cloud":
+            logging.info(f"Mengirim audio ke API Cloud (Model: {self.config['cloud_stt_model']})")
             with open(audio_path, "rb") as audio_file:
                 transcription = self.cloud_client.audio.transcriptions.create(
                     model=self.config["cloud_stt_model"],
@@ -61,6 +77,7 @@ class AIAgent:
     def __init__(self, mode, config):
         self.mode = mode
         self.config = config
+        logging.info(f"Menginisialisasi AI Agent (Mode: {self.mode})")
         if self.mode == "Local":
             self.client = OpenAI(
                 api_key=self.config["local_llm_key"], 
@@ -75,6 +92,7 @@ class AIAgent:
             self.model_name = self.config["cloud_llm_model"]
 
     def generate_summary(self, text, system_prompt, user_prompt):
+        logging.info(f"Mengirim prompt ke LLM (Model: {self.model_name})")
         response = self.client.chat.completions.create(
             model=self.model_name,
             messages=[
@@ -101,7 +119,6 @@ class STTWorker(QThread):
             result = self.transcriber.transcribe(self.audio_path)
             self.finished.emit(result)
         except Exception as e:
-            # Pake traceback biar errornya detail dari baris ke berapa
             self.error.emit(traceback.format_exc())
 
 class LLMWorker(QThread):
@@ -120,7 +137,6 @@ class LLMWorker(QThread):
             result = self.agent.generate_summary(self.text, self.sys_prompt, self.usr_prompt)
             self.finished.emit(result)
         except Exception as e:
-            # Pake traceback biar errornya detail
             self.error.emit(traceback.format_exc())
 
 # =======================================================
@@ -131,6 +147,19 @@ class MainWindow(QMainWindow):
         super().__init__()
         self.setWindowTitle("🎙️ Audio AI Agent")
         self.resize(1000, 750)
+
+        # Konfigurasi Logger Utama
+        self.log_emitter = LogEmitter()
+        self.log_emitter.log_signal.connect(self.append_log)
+        
+        self.gui_logger = QPlainTextEditLogger(self.log_emitter)
+        # Format ala Java: Tgl Waktu [INFO] [Thread] Pesan
+        self.gui_logger.setFormatter(logging.Formatter('%(asctime)s [%(levelname)s] [%(threadName)s] %(message)s', datefmt='%Y-%m-%d %H:%M:%S'))
+        
+        logging.getLogger().addHandler(self.gui_logger)
+        logging.getLogger().setLevel(logging.INFO)
+
+        logging.info("Aplikasi Audio AI Agent berhasil dimuat.")
 
         self.config = {
             "local_stt_model": "base",
@@ -155,6 +184,11 @@ class MainWindow(QMainWindow):
         self.setup_transkripsi_tab()
         self.setup_notulen_tab()
         self.setup_pengaturan_tab()
+
+    # SLOT UNTUK LOGGING GUI
+    def append_log(self, msg):
+        if hasattr(self, 'txt_logs'):
+            self.txt_logs.append(msg)
 
     # ---------------------------------------------------
     # TAB 1: TRANSKRIPSI
@@ -223,6 +257,7 @@ class MainWindow(QMainWindow):
         if filepath:
             self.audio_path = filepath
             self.lbl_file_audio.setText(f"File: {os.path.basename(filepath)}")
+            logging.info(f"File audio dipilih: {filepath}")
 
     def update_stt_progress(self):
         if self.stt_progress_val < 95:
@@ -248,6 +283,7 @@ class MainWindow(QMainWindow):
             QMessageBox.warning(self, "Peringatan", "Pilih file audio dulu, bro!")
             return
 
+        logging.info("Memulai proses transkripsi...")
         self.btn_proses_stt.setEnabled(False)
         self.btn_proses_stt.setText("⏳ Sedang Memproses...")
         self.txt_hasil_stt.clear()
@@ -270,12 +306,14 @@ class MainWindow(QMainWindow):
         self.stt_worker.start()
 
     def stt_selesai(self, hasil):
+        logging.info("Proses transkripsi selesai dengan sukses.")
         self.stt_timer.stop()
         self.stt_progress.setValue(100)
         self.txt_hasil_stt.setText(hasil)
         self.reset_stt_button()
 
     def stt_error(self, err):
+        logging.error(f"Terjadi kesalahan saat transkripsi: \n{err}")
         self.stt_timer.stop()
         self.stt_progress.setValue(0)
         self.stt_progress.setVisible(False)
@@ -295,6 +333,7 @@ class MainWindow(QMainWindow):
         if filepath:
             with open(filepath, "w", encoding="utf-8") as f:
                 f.write(teks)
+            logging.info(f"Hasil transkrip berhasil disimpan di: {filepath}")
             QMessageBox.information(self, "Sukses", "File berhasil disimpan!")
 
     # ---------------------------------------------------
@@ -391,8 +430,10 @@ class MainWindow(QMainWindow):
                 with open(filepath, "r", encoding="utf-8") as f:
                     teks = f.read()
                 self.txt_input_llm.setText(teks)
+                logging.info(f"Berhasil membaca file transkrip: {filepath}")
                 QMessageBox.information(self, "Sukses", f"Berhasil membaca file: {os.path.basename(filepath)}")
             except Exception as e:
+                logging.error(f"Gagal membaca file transkrip: {e}")
                 QMessageBox.critical(self, "Error", f"Gagal membaca file: {str(e)}")
 
     def update_llm_progress(self):
@@ -420,6 +461,7 @@ class MainWindow(QMainWindow):
             QMessageBox.warning(self, "Peringatan", "Isi teks transkripnya dulu bro!")
             return
 
+        logging.info("Memulai proses pembuatan Notulen dengan LLM...")
         self.btn_proses_llm.setEnabled(False)
         self.btn_proses_llm.setText("⏳ AI Sedang Berpikir...")
         self.txt_hasil_llm.clear()
@@ -444,12 +486,14 @@ class MainWindow(QMainWindow):
         self.llm_worker.start()
 
     def llm_selesai(self, hasil):
+        logging.info("Pembuatan notulen selesai dengan sukses.")
         self.llm_timer.stop()
         self.llm_progress.setValue(100)
         self.txt_hasil_llm.setText(hasil)
         self.reset_llm_button()
 
     def llm_error(self, err):
+        logging.error(f"Terjadi kesalahan saat generate LLM: \n{err}")
         self.llm_timer.stop()
         self.llm_progress.setValue(0)
         self.llm_progress.setVisible(False)
@@ -467,10 +511,11 @@ class MainWindow(QMainWindow):
         if filepath:
             with open(filepath, "w", encoding="utf-8") as f:
                 f.write(teks)
+            logging.info(f"Notulen berhasil disimpan di: {filepath}")
             QMessageBox.information(self, "Sukses", "Notulen berhasil disimpan!")
 
     # ---------------------------------------------------
-    # TAB 3: PENGATURAN 
+    # TAB 3: PENGATURAN & LOGGING
     # ---------------------------------------------------
     def setup_pengaturan_tab(self):
         tab = QWidget()
@@ -525,6 +570,23 @@ class MainWindow(QMainWindow):
         layout_cloud.addWidget(subtab_cloud)
         kategori_tabs.addTab(tab_cloud, "☁️ Cloud AI")
 
+        # 3. KATEGORI: SYSTEM LOGS (BARU)
+        tab_logs = QWidget()
+        layout_logs = QVBoxLayout(tab_logs)
+        
+        self.txt_logs = QTextEdit()
+        self.txt_logs.setReadOnly(True)
+        # Bikin styling ala console/terminal hacker biar greget
+        self.txt_logs.setStyleSheet("background-color: #1e1e1e; color: #00ff00; font-family: monospace; font-size: 13px;")
+        layout_logs.addWidget(self.txt_logs)
+        
+        btn_clear_log = QPushButton("🗑️ Bersihkan Log")
+        btn_clear_log.setStyleSheet("font-weight: bold; padding: 5px;")
+        btn_clear_log.clicked.connect(self.txt_logs.clear)
+        layout_logs.addWidget(btn_clear_log)
+        
+        kategori_tabs.addTab(tab_logs, "📜 System Logs")
+
         layout.addWidget(kategori_tabs)
         layout.addStretch()
 
@@ -560,6 +622,7 @@ class MainWindow(QMainWindow):
     def simpan_pengaturan(self):
         for key, entry in self.entries.items():
             self.config[key] = entry.text()
+        logging.info("Pengaturan sistem diperbarui dan disimpan ke memori.")
         QMessageBox.information(self, "Sukses", "Pengaturan berhasil diperbarui di memori!")
 
 if __name__ == "__main__":

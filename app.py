@@ -1,28 +1,33 @@
 import os
 import sys
-import time  # <-- Tambahan untuk menghitung waktu
+import time
+import traceback
+import certifi
 import whisper
 from openai import OpenAI
-
-# Load environment variables from .env file
-try:
-    from dotenv import load_dotenv
-    load_dotenv()
-except ImportError:
-    if os.path.exists(".env"):
-        with open(".env", "r", encoding="utf-8") as f:
-            for line in f:
-                line = line.strip()
-                if line and not line.startswith("#") and "=" in line:
-                    key, val = line.split("=", 1)
-                    os.environ[key.strip()] = val.strip().strip('"').strip("'")
-
 from PySide6.QtWidgets import (QApplication, QMainWindow, QWidget, QVBoxLayout,
                                QHBoxLayout, QTabWidget, QLabel, QPushButton,
                                QRadioButton, QButtonGroup, QTextEdit, QLineEdit,
                                QFileDialog, QMessageBox, QGroupBox, QFormLayout,
                                QProgressBar, QCheckBox)
 from PySide6.QtCore import QThread, Signal, Qt, QTimer
+
+# =======================================================
+# 🔧 PATCH KHUSUS MAC .APP (PYINSTALLER WINDOWED MODE)
+# =======================================================
+# 1. Cegah error stat: NoneType karena aplikasi GUI ga punya Terminal
+if sys.stdout is None:
+    sys.stdout = open(os.devnull, "w")
+if sys.stderr is None:
+    sys.stderr = open(os.devnull, "w")
+
+# 2. Tambahin Homebrew PATH biar Whisper dapet FFmpeg-nya
+os.environ["PATH"] += os.pathsep + "/usr/local/bin" + os.pathsep + "/opt/homebrew/bin"
+
+# 3. Bantu httpx/OpenAI nemuin sertifikat SSL
+os.environ["SSL_CERT_FILE"] = certifi.where()
+# =======================================================
+
 
 # =======================================================
 # 🧠 1. CLASSES (TRANSCRIBER & AI AGENT)
@@ -96,7 +101,8 @@ class STTWorker(QThread):
             result = self.transcriber.transcribe(self.audio_path)
             self.finished.emit(result)
         except Exception as e:
-            self.error.emit(str(e))
+            # Pake traceback biar errornya detail dari baris ke berapa
+            self.error.emit(traceback.format_exc())
 
 class LLMWorker(QThread):
     finished = Signal(str)
@@ -114,7 +120,8 @@ class LLMWorker(QThread):
             result = self.agent.generate_summary(self.text, self.sys_prompt, self.usr_prompt)
             self.finished.emit(result)
         except Exception as e:
-            self.error.emit(str(e))
+            # Pake traceback biar errornya detail
+            self.error.emit(traceback.format_exc())
 
 # =======================================================
 # 🎨 3. GUI UTAMA PYSIDE6
@@ -122,20 +129,20 @@ class LLMWorker(QThread):
 class MainWindow(QMainWindow):
     def __init__(self):
         super().__init__()
-        self.setWindowTitle("👨🏻‍💻 My Productivity Tools")
+        self.setWindowTitle("🎙️ Audio AI Agent")
         self.resize(1000, 750)
 
         self.config = {
-            "local_stt_model": os.getenv("LOCAL_STT_MODEL"),
-            "local_llm_model": os.getenv("LOCAL_LLM_MODEL"),
-            "local_llm_url": os.getenv("LOCAL_LLM_URL"),
-            "local_llm_key": os.getenv("LOCAL_LLM_KEY"),
-            "cloud_stt_model": os.getenv("CLOUD_STT_MODEL"),
-            "cloud_stt_url": os.getenv("CLOUD_STT_URL"),
-            "cloud_stt_key": os.getenv("CLOUD_STT_KEY"),
-            "cloud_llm_model": os.getenv("CLOUD_LLM_MODEL"),
-            "cloud_llm_url": os.getenv("CLOUD_LLM_URL"),
-            "cloud_llm_key": os.getenv("CLOUD_LLM_KEY")
+            "local_stt_model": "base",
+            "local_llm_model": "llama3",
+            "local_llm_url": "http://localhost:11434/v1",
+            "local_llm_key": "ollama",
+            "cloud_stt_model": "qwen3-omni-30b-a3b-captioner",
+            "cloud_stt_url": "https://dashscope-intl.aliyuncs.com/compatible-mode/v1",
+            "cloud_stt_key": "sk-ws-H.IIYEMM.xnhX.MEQCIBqfPDq3OlEfrvgtSjbEBHW9YaLmP9QH_LKXkrWudN-kAiBq3wxhFNVFraIazchQ19n9CthJ6Si3eATGcHrxTvJdBw",
+            "cloud_llm_model": "qwen3.7-plus",
+            "cloud_llm_url": "https://ws-er74w5iv56y4n38m.ap-southeast-1.maas.aliyuncs.com/compatible-mode/v1",
+            "cloud_llm_key": "sk-ws-H.IIYEMM.xnhX.MEQCIBqfPDq3OlEfrvgtSjbEBHW9YaLmP9QH_LKXkrWudN-kAiBq3wxhFNVFraIazchQ19n9CthJ6Si3eATGcHrxTvJdBw"
         }
 
         central_widget = QWidget()
@@ -181,7 +188,6 @@ class MainWindow(QMainWindow):
         self.btn_proses_stt.clicked.connect(self.mulai_transkripsi)
         layout.addWidget(self.btn_proses_stt)
 
-        # --- Progress Bar & Timer Layout ---
         stt_prog_layout = QHBoxLayout()
         self.stt_progress = QProgressBar()
         self.stt_progress.setValue(0)
@@ -219,12 +225,10 @@ class MainWindow(QMainWindow):
             self.lbl_file_audio.setText(f"File: {os.path.basename(filepath)}")
 
     def update_stt_progress(self):
-        # Update progress bar
         if self.stt_progress_val < 95:
             self.stt_progress_val += 1
             self.stt_progress.setValue(self.stt_progress_val)
         
-        # Update timer label (Support Jam & Hari)
         elapsed_seconds = int(time.time() - self.stt_start_time)
         days, rem = divmod(elapsed_seconds, 86400)
         hours, rem = divmod(rem, 3600)
@@ -248,7 +252,6 @@ class MainWindow(QMainWindow):
         self.btn_proses_stt.setText("⏳ Sedang Memproses...")
         self.txt_hasil_stt.clear()
         
-        # Reset progress bar & timer
         self.stt_progress.setVisible(True)
         self.lbl_waktu_stt.setVisible(True)
         self.stt_progress_val = 0
@@ -276,8 +279,7 @@ class MainWindow(QMainWindow):
         self.stt_timer.stop()
         self.stt_progress.setValue(0)
         self.stt_progress.setVisible(False)
-        # Biarkan waktu error terakhir tetap tampil
-        self.txt_hasil_stt.setText(f"❌ Error:\n{err}")
+        self.txt_hasil_stt.setText(f"❌ Error Detail:\n{err}")
         self.reset_stt_button()
 
     def reset_stt_button(self):
@@ -354,7 +356,6 @@ class MainWindow(QMainWindow):
         self.btn_proses_llm.clicked.connect(self.mulai_llm)
         layout.addWidget(self.btn_proses_llm)
 
-        # --- Progress Bar & Timer Layout ---
         llm_prog_layout = QHBoxLayout()
         self.llm_progress = QProgressBar()
         self.llm_progress.setValue(0)
@@ -395,12 +396,10 @@ class MainWindow(QMainWindow):
                 QMessageBox.critical(self, "Error", f"Gagal membaca file: {str(e)}")
 
     def update_llm_progress(self):
-        # Update progress bar
         if self.llm_progress_val < 95:
             self.llm_progress_val += 1
             self.llm_progress.setValue(self.llm_progress_val)
         
-        # Update timer label (Support Jam & Hari)
         elapsed_seconds = int(time.time() - self.llm_start_time)
         days, rem = divmod(elapsed_seconds, 86400)
         hours, rem = divmod(rem, 3600)
@@ -425,7 +424,6 @@ class MainWindow(QMainWindow):
         self.btn_proses_llm.setText("⏳ AI Sedang Berpikir...")
         self.txt_hasil_llm.clear()
 
-        # Reset progress bar & timer
         self.llm_progress.setVisible(True)
         self.lbl_waktu_llm.setVisible(True)
         self.llm_progress_val = 0
@@ -455,7 +453,7 @@ class MainWindow(QMainWindow):
         self.llm_timer.stop()
         self.llm_progress.setValue(0)
         self.llm_progress.setVisible(False)
-        self.txt_hasil_llm.setText(f"❌ Error:\n{err}")
+        self.txt_hasil_llm.setText(f"❌ Error Detail:\n{err}")
         self.reset_llm_button()
 
     def reset_llm_button(self):

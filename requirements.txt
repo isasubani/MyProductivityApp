@@ -3,3 +3,4 @@ openai-whisper
 openai
 python-dotenv
 pyinstaller
+tensorboard
